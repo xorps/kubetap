@@ -110,6 +110,7 @@ func newCLI() (*cobra.Command, error) {
 	onCmd.Flags().Bool("port-forward", false, "enable to automatically kubctl port-forward to services")
 	onCmd.Flags().Bool("browser", false, "enable to open browser windows to service and proxy. Also enables --port-forward")
 	onCmd.Flags().String("protocol", "http", "specify a protocol. Supported protocols: [ http ]")
+	onCmd.Flags().Duration("timeout", defaultReadyTimeout, "how long to wait for the tapped Pod to become ready with --port-forward or --browser")
 
 	rootCmd.AddCommand(versionCmd, onCmd, offCmd, listCmd)
 
@@ -137,6 +138,9 @@ func bindTapFlags(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := viper.BindPFlag("protocol", cmd.Flags().Lookup("protocol")); err != nil {
+		return err
+	}
+	if err := viper.BindPFlag("readyTimeout", cmd.Flags().Lookup("timeout")); err != nil {
 		return err
 	}
 	return nil

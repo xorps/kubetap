@@ -16,9 +16,11 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/ioutil"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -503,6 +505,33 @@ func fakeClientUntappedNoPortName() *fake.Clientset {
 		&deployment,
 		&service,
 	)
+}
+
+func Test_NewTapCommand_readyTimeout(t *testing.T) {
+	// The fake cluster never creates the tapped Pod, so waiting must time out
+	// with an error (previously this path panicked on a closed channel).
+	fakeClient := fakeClientUntappedSimple()
+	testViper := viper.New()
+	testViper.Set("proxyPort", 80)
+	testViper.Set("namespace", "default")
+	testViper.Set("portForward", true)
+	testViper.Set("readyTimeout", 2*time.Second)
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOutput(io.Discard)
+	err := NewTapCommand(fakeClient, &rest.Config{}, testViper)(cmd, []string{"sample-service"})
+	require.ErrorContains(t, err, "pod not running after 2s")
+}
+
+func Test_NewTapCommand_invalidTimeout(t *testing.T) {
+	testViper := viper.New()
+	testViper.Set("proxyPort", 80)
+	testViper.Set("portForward", true)
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOutput(io.Discard)
+	err := NewTapCommand(fakeClientUntappedSimple(), &rest.Config{}, testViper)(cmd, []string{"sample-service"})
+	require.ErrorContains(t, err, "--timeout must be greater than zero")
 }
 
 func Test_podContainersReady(t *testing.T) {

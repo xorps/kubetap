@@ -50,6 +50,8 @@ kubectl logs deploy/<deployment> -n <namespace> -c kubetap | grep token=
 
 Note that you can also use the `--browser` flag with `tap on` to automatically
 open the printed URLs in the default browser. `--browser` implies `--port-forward`.
+With either flag, `tap on` waits up to 90 seconds for the tapped Pod to become
+ready; pass `--timeout` (e.g. `--timeout 5m`) to wait longer.
 
 [http://127.0.0.1:2244](http://127.0.0.1:2244)
 <img src='../../img/mitmproxy-web-tap.png' class='img'/>
