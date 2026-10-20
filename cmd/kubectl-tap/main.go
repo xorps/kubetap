@@ -50,10 +50,13 @@ const (
 var errUsage = errors.New("no subcommand given")
 
 func main() {
-	// Cancelled on Ctrl-C/SIGTERM so in-flight work stops and taps can be reverted.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx)
-	stop()
+	err := func() error {
+		// Cancelled on Ctrl-C/SIGTERM so in-flight work stops and taps can be reverted.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		return run(ctx)
+	}()
 	if errors.Is(err, errUsage) {
 		os.Exit(64) // EX_USAGE
 	}
