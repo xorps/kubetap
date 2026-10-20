@@ -53,7 +53,7 @@ const (
 	kubetapProxyWebInterfacePort = 2244
 	kubetapConfigMapPrefix       = "kubetap-target-"
 
-	interactiveTimeoutSeconds = 90
+	defaultReadyTimeout       = 90 * time.Second
 	readyCheckDelaySeconds    = 5
 	revertTimeout             = 30 * time.Second
 	configMapAnnotationPrefix = "target-"
@@ -193,6 +193,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		https := viper.GetBool("https")
 		portForward := viper.GetBool("portForward")
 		openBrowser := viper.GetBool("browser")
+		readyTimeout := viper.GetDuration("readyTimeout")
 
 		if openBrowser {
 			portForward = true
@@ -200,6 +201,9 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		commandArgs := strings.Fields(viper.GetString("commandArgs"))
 		if targetSvcPort == 0 {
 			return errors.New("--port flag not provided")
+		}
+		if portForward && readyTimeout <= 0 {
+			return errors.New("--timeout must be greater than zero")
 		}
 		if namespace == "" {
 			// TODO: There is probably a way to get the default namespace from the
@@ -394,7 +398,9 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 
 		podsClient := client.CoreV1().Pods(namespace)
-		bar := progressbar.NewOptions(interactiveTimeoutSeconds,
+		// One progress step per second of the timeout, rounded up.
+		readySteps := int((readyTimeout + time.Second - 1) / time.Second)
+		bar := progressbar.NewOptions(readySteps,
 			progressbar.OptionThrottle(100*time.Millisecond),
 			progressbar.OptionClearOnFinish(),
 			progressbar.OptionSetPredictTime(false),
@@ -409,15 +415,16 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var ready bool
-		for i := range interactiveTimeoutSeconds {
+		for i := range readySteps {
 			select {
 			case <-ctx.Done():
 				return stopOnCancel(nil)
 			case <-ticker.C:
 			}
 			_ = bar.Add(1)
-			// Skip the first few checks to give the new Pod time to be created.
-			if i < readyCheckDelaySeconds {
+			// Skip the first few checks to give the new Pod time to be created,
+			// but always check at least once before timing out.
+			if i < min(readyCheckDelaySeconds, readySteps-1) {
 				continue
 			}
 			dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
@@ -440,7 +447,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 		if !ready {
 			fmt.Fprintf(cmd.OutOrStdout(), ".\n\n")
-			return fmt.Errorf("pod not running after %d seconds; cancelling port-forward, tap still active", interactiveTimeoutSeconds)
+			return fmt.Errorf("pod not running after %s; cancelling port-forward, tap still active (use --timeout to wait longer)", readyTimeout)
 		}
 		dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
