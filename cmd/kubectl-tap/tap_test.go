@@ -504,3 +504,27 @@ func fakeClientUntappedNoPortName() *fake.Clientset {
 		&service,
 	)
 }
+
+func Test_podContainersReady(t *testing.T) {
+	withCondition := func(status v1.ConditionStatus) v1.Pod {
+		return v1.Pod{Status: v1.PodStatus{Conditions: []v1.PodCondition{
+			{Type: v1.PodScheduled, Status: v1.ConditionTrue},
+			{Type: v1.ContainersReady, Status: status},
+		}}}
+	}
+	tests := []struct {
+		Name string
+		Pod  v1.Pod
+		Want bool
+	}{
+		{"ready", withCondition(v1.ConditionTrue), true},
+		{"not_ready", withCondition(v1.ConditionFalse), false},
+		{"unknown", withCondition(v1.ConditionUnknown), false},
+		{"no_conditions", v1.Pod{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.Name, func(t *testing.T) {
+			require.Equal(t, tc.Want, podContainersReady(tc.Pod))
+		})
+	}
+}
