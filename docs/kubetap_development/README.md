@@ -24,7 +24,7 @@ Script-managed dependencies, run via `go run`/`go install` at pinned versions:
 
 | dependency      | purpose | notes                                           |
 | ---             | ---     | ---                                             |
-| `golangci-lint` | Linting | used as Go code linter                          |
+| `golangci-lint` | Linting | Go code linter, installed from [prebuilt binaries](https://golangci-lint.run/docs/welcome/install/local/) |
 | `gotestsum`     | Testing | used to make test output prettier               |
 | `kind`          | Testing | required for integration tests                  |
 
