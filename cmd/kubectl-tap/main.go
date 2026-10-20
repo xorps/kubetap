@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -44,35 +45,60 @@ const (
 	defaultImageGRPC = "ghcr.io/xorps/kubetap-grpc:latest"
 )
 
-// die exit the program, printing the error.
-func die(args ...any) {
-	fmt.Fprintln(os.Stderr, args...)
-	os.Exit(1)
-}
+// errUsage is returned when kubectl tap is run without a subcommand. Usage has
+// already been printed, so main exits with EX_USAGE without printing it.
+var errUsage = errors.New("no subcommand given")
 
 func main() {
-	exiter := &Exit{}
-	rootCmd := NewRootCmd(exiter)
+	// Cancelled on Ctrl-C/SIGTERM so in-flight work stops and taps can be reverted.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if errors.Is(err, errUsage) {
+		os.Exit(64) // EX_USAGE
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context) error {
+	rootCmd, err := newCLI() //nolint:contextcheck // commands get ctx via ExecuteContext and cmd.Context()
+	if err != nil {
+		return err
+	}
+	return rootCmd.ExecuteContext(ctx)
+}
+
+// newCLI assembles the root command and its subcommands.
+func newCLI() (*cobra.Command, error) {
+	rootCmd := NewRootCmd()
 
 	kubernetesConfigFlags := genericclioptions.NewConfigFlags(false)
 	kubernetesConfigFlags.AddFlags(rootCmd.PersistentFlags())
-
-	config, err := kubernetesConfigFlags.ToRESTConfig()
-	if err != nil {
-		die(err)
-	}
-	client, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		die(err)
-	}
 	if err := viper.BindPFlags(rootCmd.PersistentFlags()); err != nil {
-		die(err)
+		return nil, err
+	}
+
+	// Clients are built when a command runs, after flags such as --context and
+	// --kubeconfig have been parsed.
+	clients := func() (*rest.Config, kubernetes.Interface, error) {
+		config, err := kubernetesConfigFlags.ToRESTConfig()
+		if err != nil {
+			return nil, nil, err
+		}
+		client, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			return nil, nil, err
+		}
+		return config, client, nil
 	}
 
 	versionCmd := NewVersionCmd()
-	onCmd := NewOnCmd(client, config)
-	offCmd := NewOffCmd(client)
-	listCmd := NewListCmd(client)
+	onCmd := NewOnCmd(clients)
+	offCmd := NewOffCmd(clients)
+	listCmd := NewListCmd(clients)
 
 	onCmd.Flags().StringP("port", "p", "", "target Service port")
 	onCmd.Flags().StringP("image", "i", defaultImageHTTP, "image to run in proxy container")
@@ -84,13 +110,7 @@ func main() {
 
 	rootCmd.AddCommand(versionCmd, onCmd, offCmd, listCmd)
 
-	// Cancelled on Ctrl-C/SIGTERM so in-flight work stops and taps can be reverted.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err = rootCmd.ExecuteContext(ctx)
-	stop()
-	if err != nil {
-		exiter.Exit(1)
-	}
+	return rootCmd, nil
 }
 
 // bindTapFlags is a workaround for https://github.com/spf13/viper/issues/233
@@ -119,7 +139,7 @@ func bindTapFlags(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func NewRootCmd(e Exiter) *cobra.Command {
+func NewRootCmd() *cobra.Command {
 	return &cobra.Command{
 		// HACK: there is a "bug" in cobra's handling of Use strings with spaces, so the space
 		// below in the Use field isn't a true space -- it's a unicode Em space.
@@ -144,42 +164,65 @@ func NewRootCmd(e Exiter) *cobra.Command {
  Created and maintained by Soluble:
    https://www.soluble.ai/
 `,
-		Run: func(cmd *cobra.Command, _ []string) {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			// NOTE: explicitly print out usage here, but overriding it for subcommands by way
 			// of SilenceUsage: true
 			_ = cmd.Usage()
-			e.Exit(64) // EX_USAGE
+			return errUsage
 		},
 		SilenceUsage: true,
+		// main prints errors, so cobra shouldn't as well.
+		SilenceErrors: true,
 	}
 }
 
-func NewOnCmd(client kubernetes.Interface, config *rest.Config) *cobra.Command {
+// clientsFunc returns Kubernetes clients built from the parsed command-line flags.
+type clientsFunc func() (*rest.Config, kubernetes.Interface, error)
+
+func NewOnCmd(clients clientsFunc) *cobra.Command {
 	return &cobra.Command{
 		Use:     "on",
 		Short:   "Tap a Service",
 		Example: "kubectl tap on -n my-namespace -p443 --https my-sample-service",
 		PreRunE: bindTapFlags,
-		RunE:    NewTapCommand(client, config, viper.GetViper()),
-		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			config, client, err := clients()
+			if err != nil {
+				return err
+			}
+			return NewTapCommand(client, config, viper.GetViper())(cmd, args)
+		},
+		Args: cobra.ExactArgs(1),
 	}
 }
 
-func NewOffCmd(client kubernetes.Interface) *cobra.Command {
+func NewOffCmd(clients clientsFunc) *cobra.Command {
 	return &cobra.Command{
 		Use:     "off",
 		Short:   "Untap a Service",
 		Example: "kubectl tap off -n my-namespace my-sample-service",
-		RunE:    NewUntapCommand(client, viper.GetViper()),
-		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, err := clients()
+			if err != nil {
+				return err
+			}
+			return NewUntapCommand(client, viper.GetViper())(cmd, args)
+		},
+		Args: cobra.ExactArgs(1),
 	}
 }
 
-func NewListCmd(client kubernetes.Interface) *cobra.Command {
+func NewListCmd(clients clientsFunc) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List tapped Services",
-		RunE:  NewListCommand(client, viper.GetViper()),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, client, err := clients()
+			if err != nil {
+				return err
+			}
+			return NewListCommand(client, viper.GetViper())(cmd, args)
+		},
 	}
 }
 
@@ -191,15 +234,4 @@ func NewVersionCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "version: %s, commit: %s, built at: %s\n", version, commit, date)
 		},
 	}
-}
-
-// Exiter exits the program, calling os.Exit(code), nothing more.
-type Exiter interface {
-	Exit(code int)
-}
-
-type Exit struct{}
-
-func (e *Exit) Exit(code int) {
-	os.Exit(code)
 }
