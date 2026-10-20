@@ -204,7 +204,7 @@ var (
 					Containers: []v1.Container{
 						{
 							Name:  "someapp",
-							Image: "gcr.io/soluble-oss/someapp:latest",
+							Image: "ghcr.io/xorps/someapp:latest",
 						},
 					},
 				},
@@ -249,11 +249,11 @@ var (
 					Containers: []v1.Container{
 						{
 							Name:  "someapp",
-							Image: "gcr.io/soluble-oss/someapp:latest",
+							Image: "ghcr.io/xorps/someapp:latest",
 						},
 						{
 							Name:  kubetapContainerName,
-							Image: "gcr.io/soluble-oss/kubetap-mitmproxy:latest",
+							Image: "ghcr.io/xorps/kubetap-mitmproxy:latest",
 						},
 					},
 					Volumes: []v1.Volume{

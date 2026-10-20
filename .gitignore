@@ -11,10 +11,6 @@ cmd/kubectl-tap/kubectl-tap
 kubectl-tap
 !kubectl-tap/
 dist/*
-ci.mod
-ci.sum
-ig-tests.mod
-ig-tests.sum
 *_original
 site/
 .vim/

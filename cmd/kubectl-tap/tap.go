@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -50,13 +50,14 @@ const (
 	kubetapContainerName         = "kubetap"
 	kubetapServicePortName       = "kubetap-web"
 	kubetapPortName              = "kubetap-listen"
-	kubetapWebPortName           = "kubetap-web"
+	kubetapWebPortName           = "kubetap-web" //nolint:gosec // port name, not a credential
 	kubetapProxyListenPort       = 7777
 	kubetapProxyWebInterfacePort = 2244
 	kubetapConfigMapPrefix       = "kubetap-target-"
 
 	interactiveTimeoutSeconds = 90
 	configMapAnnotationPrefix = "target-"
+	proxyModeReverse          = "reverse"
 
 	protocolHTTP Protocol = "http"
 	protocolTCP  Protocol = "tcp"
@@ -130,7 +131,7 @@ type ProxyOptions struct {
 
 // NewListCommand lists Services that are already tapped.
 func NewListCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
 		namespace := viper.GetString("namespace")
 		exists, err := hasNamespace(client, namespace)
 		if err != nil {
@@ -179,7 +180,7 @@ func NewListCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra
 
 // NewTapCommand identifies a target employment through service selectors and modifies that
 // deployment to add a proxy sidecar.
-func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *viper.Viper) func(*cobra.Command, []string) error { //nolint: gocyclo
+func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *viper.Viper) func(*cobra.Command, []string) error { //nolint:gocyclo,maintidx
 	return func(cmd *cobra.Command, args []string) error {
 		targetSvcName := args[0]
 
@@ -196,7 +197,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 		commandArgs := strings.Fields(viper.GetString("commandArgs"))
 		if targetSvcPort == 0 {
-			return fmt.Errorf("--port flag not provided")
+			return errors.New("--port flag not provided")
 		}
 		if namespace == "" {
 			// TODO: There is probably a way to get the default namespace from the
@@ -217,12 +218,12 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		proxyOpts := ProxyOptions{
 			Target:        targetSvcName,
 			UpstreamHTTPS: https,
-			Mode:          "reverse", // eventually this may be configurable
+			Mode:          proxyModeReverse, // eventually this may be configurable
 			Namespace:     namespace,
 		}
 		// Adjust default image by protocol if not manually set
 		if image == defaultImageHTTP {
-			switch Protocol(protocol) { // nolint: exhaustive
+			switch Protocol(protocol) { //nolint: exhaustive
 			case protocolTCP, protocolUDP:
 				// TODO: make this container and remove error
 				image = defaultImageRaw
@@ -289,7 +290,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 
 		// Get a proxy based on the protocol type
 		var proxy Tap
-		switch Protocol(protocol) { // nolint: exhaustive
+		switch Protocol(protocol) { //nolint: exhaustive
 		case protocolTCP, protocolUDP:
 		case protocolGRPC:
 		default:
@@ -350,6 +351,8 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			fmt.Fprintf(cmd.OutOrStdout(), "You can access the proxy web interface at http://127.0.0.1:2244\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "after running the following command:\n\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "  kubectl port-forward svc/%s -n %s 2244:2244\n\n", targetSvcName, namespace)
+			fmt.Fprintf(cmd.OutOrStdout(), "The proxy web interface asks for a login token, which can be found with:\n\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "  kubectl logs deploy/%s -n %s -c %s | grep token=\n\n", dpl.Name, namespace, kubetapContainerName)
 			fmt.Fprintf(cmd.OutOrStdout(), "If the Service is not publicly exposed through an Ingress,\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "you can access it with the following command:\n\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "  kubectl port-forward svc/%s -n %s 4000:%d\n\n", targetSvcName, namespace, targetSvcPort)
@@ -395,7 +398,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			}),
 		)
 		var ready bool
-		for i := 0; i < interactiveTimeoutSeconds; i++ {
+		for range interactiveTimeoutSeconds {
 			_ = bar.Add(1)
 			if ready {
 				_ = bar.Finish()
@@ -468,6 +471,8 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s - http://127.0.0.1:%s\n\n", targetSvcName, "4000")
 		}
+		fmt.Fprintf(cmd.OutOrStdout(), "The %s web interface asks for a login token, which can be found with:\n\n", proxy.String())
+		fmt.Fprintf(cmd.OutOrStdout(), "  kubectl logs deploy/%s -n %s -c %s | grep token=\n\n", dpl.Name, namespace, kubetapContainerName)
 		if openBrowser {
 			go func() {
 				time.Sleep(2 * time.Second)

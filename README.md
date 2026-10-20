@@ -9,6 +9,11 @@
 [![Go version][shield-go-version]][go-version]
 [![License][shield-license]][license]
 
+> [!NOTE]
+> This is a maintained fork of [soluble-ai/kubetap](https://github.com/soluble-ai/kubetap),
+> which is no longer active. It keeps dependencies current and publishes releases
+> and container images from `github.com/xorps/kubetap` and `ghcr.io/xorps`.
+
 ## What is Kubetap?
 
 Kubetap is a kubectl plugin that enables an operator to easily deploy intercepting
@@ -38,7 +43,7 @@ Thus, Kubetap was born.
 
 ## Documentation
 
-The documentation website, [https://soluble-ai.github.io/kubetap/][kubetap-docs],
+The documentation website, [https://xorps.github.io/kubetap/][kubetap-docs],
 contains formatted documentation. The documentation site source is available in
 the [docs folder](docs/README.md), however an abridged documentation is provided
 below.
@@ -47,36 +52,16 @@ below.
 
 ### From Source
 
-The recommended installation method is to clone the repository and run:
+With Go installed, run:
 
 ```sh
-$ go generate
-
-$ go install ./cmd/kubectl-tap
-```
-
-### Homebrew
-
-Soluble provides a [homebrew formula repository](https://github.com/soluble-ai/homebrew-kubetap).
-
-```sh
-brew tap soluble-ai/homebrew-kubetap
-
-brew install kubetap
+go install github.com/xorps/kubetap/cmd/kubectl-tap@latest
 ```
 
 ### Binary Release
 
 Binary releases for Mac (non-notarized), Windows, and Linux of varying
-architectures are available from the [Releases page](https://github.com/soluble-ai/kubetap/releases).
-
-### With Krew
-
-Kubetap can be installed with krew:
-
-```sh
-kubectl krew install tap
-```
+architectures are available from the [Releases page](https://github.com/xorps/kubetap/releases).
 
 ## Usage
 
@@ -128,18 +113,18 @@ default/grafana
 ### In a container
 
 It is possible to schedule kubetap as a Pod in Kubernetes using the
-`grc.io/soluble-oss/kubectl-tap:latest` container. When run in a cluster,
+`ghcr.io/xorps/kubectl-tap:latest` container. When run in a cluster,
 kubetap will automatically detect and use serviceaccount tokens that are
 mounted to the container's filesystem.
 
 Additionally, it is possible to run the containers from a developer laptop as follows:
 
 ```sh
-docker run -v "${HOME}/.kube/:/.kube/:ro" 'gcr.io/soluble-oss/kubectl-tap:latest' on -p80 myservice
+docker run -v "${HOME}/.kube/:/.kube/:ro" 'ghcr.io/xorps/kubectl-tap:latest' on -p80 myservice
 ```
 
 ```sh
-docker run -v "${HOME}/.kube/:.kube/:ro" 'gcr.io/soluble-oss/kubectl-tap:latest' off myservice
+docker run -v "${HOME}/.kube/:.kube/:ro" 'ghcr.io/xorps/kubectl-tap:latest' off myservice
 ```
 
 ## Made by Soluble.ai
@@ -149,15 +134,15 @@ This project was created to compliment the [Soluble platform][soluble].
 [Building Kubetap][building-kubetap] is a blog post detailing the creation and implementation of kubetap.
 
 [soluble]: https://www.soluble.ai/
-[kubetap-docs]: https://soluble-ai.github.io/kubetap/
-[shield-go-version]: https://img.shields.io/github/go-mod/go-version/soluble-ai/kubetap
-[shield-build-status]: https://github.com/soluble-ai/kubetap/workflows/kubectl-tap/badge.svg?branch=master
-[shield-latest-release]: https://img.shields.io/github/v/release/soluble-ai/kubetap?include_prereleases&label=release&sort=semver
-[shield-license]: https://img.shields.io/github/license/soluble-ai/kubetap.svg
-[license]: https://github.com/soluble-ai/kubetap/blob/master/LICENSE
-[go-version]: https://github.com/soluble-ai/kubetap/blob/master/go.mod
-[latest-release]: https://github.com/soluble-ai/kubetap/releases
-[build-status]: https://github.com/soluble-ai/kubetap/actions
+[kubetap-docs]: https://xorps.github.io/kubetap/
+[shield-go-version]: https://img.shields.io/github/go-mod/go-version/xorps/kubetap
+[shield-build-status]: https://github.com/xorps/kubetap/workflows/kubectl-tap/badge.svg?branch=master
+[shield-latest-release]: https://img.shields.io/github/v/release/xorps/kubetap?include_prereleases&label=release&sort=semver
+[shield-license]: https://img.shields.io/github/license/xorps/kubetap.svg
+[license]: https://github.com/xorps/kubetap/blob/master/LICENSE
+[go-version]: https://github.com/xorps/kubetap/blob/master/go.mod
+[latest-release]: https://github.com/xorps/kubetap/releases
+[build-status]: https://github.com/xorps/kubetap/actions
 [video]: https://www.youtube.com/watch?v=hBroFtlxvkM
 [building-kubetap]: https://www.soluble.ai/blog/building-kubetap
 [kubectl-plugin]: https://kubernetes.io/docs/tasks/extend-kubectl/kubectl-plugins/

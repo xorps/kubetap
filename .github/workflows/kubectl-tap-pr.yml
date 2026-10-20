@@ -3,39 +3,28 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    timeout-minutes: 15
+    timeout-minutes: 20
     name: Go build kubectl-tap
     runs-on: ubuntu-latest
     env:
       GOFLAGS: -mod=readonly
-      GOPROXY: https://proxy.golang.org
-    strategy:
-      matrix:
-        go: 
-        - '1.14'
-        - '1.15'
     steps:
-    - 
-      name: Setup Go env
-      uses: actions/setup-go@v2
-      with:
-        go-version: ${{ matrix.go }}
-    - 
-      name: Install Dependencies
-      run: sudo apt-get update; sudo apt-get install zsh kubectl
-    - 
-      name: Checkout
-      uses: actions/checkout@v2
-    - 
-      name: Lint and Test
-      run: |
-        go generate ./...
-    - 
-      name: Build
-      run: |
-        go install -v -trimpath -ldflags="-s -w" ./cmd/kubectl-tap
-    - 
-      name: Integration Test
-      run: ./scripts/ig-test.zsh
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go env
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Lint and Test
+        run: go generate ./...
+      - name: Build
+        run: go install -v -trimpath -ldflags="-s -w" ./cmd/kubectl-tap
+      - name: Integration Test
+        run: ./scripts/ig-test.zsh

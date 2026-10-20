@@ -44,5 +44,9 @@ export PATH="${GOPATH}/bin:${PATH}"
 
 ### The Mac OS Binary doesn't run
 
-Mac binaries require notarization. It is recommended to use Homebrew to install
-Kubetap on Mac, or to build from source.
+Mac binaries are not notarized, so Gatekeeper blocks them. Either build from
+source with `go install`, or clear the quarantine flag on the downloaded binary:
+
+```sh
+xattr -d com.apple.quarantine ./kubectl-tap
+```

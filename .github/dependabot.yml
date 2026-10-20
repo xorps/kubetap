@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      kubernetes:
+        patterns: ["k8s.io/*"]
+      go:
+        patterns: ["*"]
+        exclude-patterns: ["k8s.io/*"]
+  - package-ecosystem: docker
+    directories: [/, /proxies/mitmproxy]
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /docs
+    schedule:
+      interval: weekly

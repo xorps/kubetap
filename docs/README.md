@@ -5,9 +5,13 @@
 </p>
 
 Kubetap is a [![open source](img/GitHub-Mark-32px.png)][kubetapGH]
-[open source](https://github.com/soluble-ai/kubetap) CNI-agnostic
+[open source](https://github.com/xorps/kubetap) CNI-agnostic
 project by [![Soluble](img/soluble-logo-very-small.png)][soluble]
 that automates the process of proxying Kubernetes Services.
+
+!!! note
+    This is a maintained fork of [soluble-ai/kubetap](https://github.com/soluble-ai/kubetap),
+    which is no longer active.
 
 ---
 
@@ -78,7 +82,7 @@ can inspect and debug a Service without unnecessary printf debugging code-pushes
 
 [View the Quick start guide to begin using kubetap](getting_started/quick-start.md)
 
-[kubetapGH]: https://github.com/soluble-ai/kubetap
+[kubetapGH]: https://github.com/xorps/kubetap
 [soluble]: https://www.soluble.ai
 [kubetapDemo]: https://www.youtube.com/watch?v=hBroFtlxvkM
 [erinerGH]: https://github.com/eriner

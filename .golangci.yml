@@ -1,21 +1,42 @@
+version: "2"
 run:
   tests: false
-  timeout: 5m
-  skip-dirs:
-    - hack
-    - proxies
 linters:
-  enable-all: true
+  default: all
   disable:
-    - wsl
-    - lll
+    - cyclop
+    - depguard
+    - err113
+    - exhaustruct
+    - exhaustruct_v5
     - funlen
-    - godox
-    - gomnd
-    - gocognit
-    - goerr113
     - gochecknoglobals
-    - gci
+    - gocognit
+    - godoclint
+    - godox
+    - gomodguard
+    - inamedparam
+    - ireturn
+    - lll
+    - mnd
     - nlreturn
-    - exhaustivestruct
+    - noinlineerr
+    - tagliatelle
+    - varnamelen
     - wrapcheck
+    - wsl
+    - wsl_v5
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax

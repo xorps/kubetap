@@ -1,75 +1,57 @@
+version: 2
 project_name: kubetap
 env:
-- CGO_ENABLED=0
+  - CGO_ENABLED=0
 before:
   hooks:
     - go mod download
 builds:
-- main: ./cmd/kubectl-tap/
-  binary: kubectl-tap
-  goos:
-    - linux
-    - darwin
-    - windows
-  goarch:
-    - 386
-    - amd64
-    - arm
-    - arm64
-  goarm:
-    - 6
-    - 7
-  ignore:
-    - goos: darwin
-      goarch: 386
-    - goos: darwin
-      goarch: arm64
-    - goos: darwin
-      goarch: arm
-    - goos: windows
-      goarch: 386
-    - goos: windows
-      goarch: arm64
-    - goos: windows
-      goarch: arm
+  - main: ./cmd/kubectl-tap/
+    binary: kubectl-tap
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - "386"
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: "386"
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: "386"
+      - goos: windows
+        goarch: arm
 archives:
-- replacements:
-    darwin: Darwin
-    linux: Linux
-    windows: Windows
-    386: i386
-    amd64: x86_64
-  name_template: '{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}'
-  format_overrides:
-    - goos: windows
-      format: zip
+  - name_template: >-
+      {{ .ProjectName }}_{{ .Tag }}_{{ title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
 checksum:
   name_template: 'kubetap_checksums.txt'
 snapshot:
-  name_template: '{{ .Tag }}-next'
+  version_template: '{{ .Tag }}-next'
 changelog:
   sort: asc
   filters:
     exclude:
-    - '^docs:'
-    - '^test:'
-    - '^scripts:'
-    - '^proxies:'
-brews:
-  - 
-    name: kubetap
-    tap:
-      owner: soluble-ai
-      name: homebrew-kubetap
-    folder: Formula
-    skip_upload: false
-    download_strategy: CurlDownloadStrategy
-    caveats: 'kubetap is best invoked as: $ kubectl tap'
-    homepage: 'https://github.com/soluble-ai/kubetap'
-    description: 'Kubetap is a kubectl plugin to interactively proxy Kubernetes Services with ease'
-    custom_block: |
-      head "https://github.com/soluble-ai/kubetap.git"
-    test: |
-      system "#{bin}/kubectl-tap version"
-    install: |
-      bin.install "./kubectl-tap"
+      - '^docs:'
+      - '^test:'
+      - '^scripts:'
+      - '^proxies:'

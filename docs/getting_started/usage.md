@@ -40,27 +40,27 @@ argocd/argocd-server
 # In a container
 
 It is possible to schedule kubetap as a Pod in Kubernetes using the
-`grc.io/soluble-oss/kubectl-tap:latest` container. When run in a cluster,
+`ghcr.io/xorps/kubectl-tap:latest` container. When run in a cluster,
 kubetap will automatically detect and use ServiceAccount tokens that are
 mounted to the container's filesystem.
 
 Additionally, it is possible to run the containers from a developer laptop as follows:
 
 ```sh
-docker run -v "${HOME}/.kube/:/.kube/:ro" 'gcr.io/soluble-oss/kubectl-tap:latest' on -n mynamespace -p80 myservice
+docker run -v "${HOME}/.kube/:/.kube/:ro" 'ghcr.io/xorps/kubectl-tap:latest' on -n mynamespace -p80 myservice
 ```
 
 ```sh
-docker run -v "${HOME}/.kube/:.kube/:ro" 'gcr.io/soluble-oss/kubectl-tap:latest' off -n mynamespace myservice
+docker run -v "${HOME}/.kube/:.kube/:ro" 'ghcr.io/xorps/kubectl-tap:latest' off -n mynamespace myservice
 ```
 
 ## Image variations
 
-Kubetap is built on alpine, and available at `gcr.io/soluble-ass/kubectl-tap`.
+Kubetap is built on alpine, and available at `ghcr.io/xorps/kubectl-tap`.
 Images are distributed under two major tags:
 
 | Image and tag                           | Description                                                                 |
 | ---                                     | ---                                                                         |
-| `gcr.io/soluble-oss/kubectl-tap:latest` | Alpine build and `scratch` execution environment. Tiny container, no shell. |
-| `gcr.io/soluble-oss/kubectl-tap:alpine` | Alpine build and execution environment. Useful for debugging, has a shell.  |
+| `ghcr.io/xorps/kubectl-tap:latest` | Alpine build and `scratch` execution environment. Tiny container, no shell. |
+| `ghcr.io/xorps/kubectl-tap:alpine` | Alpine build and execution environment. Useful for debugging, has a shell.  |
 
