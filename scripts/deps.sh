@@ -9,8 +9,10 @@ if ! [ -x "$(command -v kubectl)" ]; then
   exit 1
 fi
 
+# golangci-lint recommends its prebuilt binaries over `go install`
+# See: https://golangci-lint.run/docs/welcome/install/local/
 if ! [ -x "$(command -v golangci-lint)" ]; then
-  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+  curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" ${GOLANGCI_LINT_VERSION}
 fi
 
 if ! [ -x "$(command -v gotestsum)" ]; then
