@@ -142,17 +142,17 @@ func (m *Mitmproxy) String() string {
 }
 
 // ReadyEnv readies the environment by providing a ConfigMap for the mitmproxy container.
-func (m *Mitmproxy) ReadyEnv() error {
+func (m *Mitmproxy) ReadyEnv(ctx context.Context) error {
 	configmapsClient := m.Client.CoreV1().ConfigMaps(m.ProxyOpts.Namespace)
 	// Create the ConfigMap based the options we're configuring mitmproxy with
-	if err := createMitmproxyConfigMap(configmapsClient, m.ProxyOpts); err != nil {
+	if err := createMitmproxyConfigMap(ctx, configmapsClient, m.ProxyOpts); err != nil {
 		// If the service hasn't been tapped but still has a configmap from a previous
 		// run (which can happen if the deployment borks and "tap off" isn't explicitly run,
 		// delete the configmap and try again.
 		// This is mostly here to fix development environments that become broken during
 		// code testing.
-		_ = destroyMitmproxyConfigMap(configmapsClient, m.ProxyOpts.dplName)
-		rErr := createMitmproxyConfigMap(configmapsClient, m.ProxyOpts)
+		_ = destroyMitmproxyConfigMap(ctx, configmapsClient, m.ProxyOpts.dplName)
+		rErr := createMitmproxyConfigMap(ctx, configmapsClient, m.ProxyOpts)
 		if rErr != nil {
 			if errors.Is(rErr, os.ErrInvalid) {
 				return errors.New("there was an unexpected problem creating the ConfigMap")
@@ -164,14 +164,14 @@ func (m *Mitmproxy) ReadyEnv() error {
 }
 
 // UnreadyEnv removes tap supporting configmap.
-func (m *Mitmproxy) UnreadyEnv() error {
+func (m *Mitmproxy) UnreadyEnv(ctx context.Context) error {
 	configmapsClient := m.Client.CoreV1().ConfigMaps(m.ProxyOpts.Namespace)
-	return destroyMitmproxyConfigMap(configmapsClient, m.ProxyOpts.dplName)
+	return destroyMitmproxyConfigMap(ctx, configmapsClient, m.ProxyOpts.dplName)
 }
 
 // createMitmproxyConfigMap creates a mitmproxy configmap based on the proxy mode, however currently
 // only "reverse" mode is supported.
-func createMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, proxyOpts ProxyOptions) error {
+func createMitmproxyConfigMap(ctx context.Context, configmapClient corev1.ConfigMapInterface, proxyOpts ProxyOptions) error {
 	// TODO: eventually, we should build a struct and use yaml to marshal this,
 	// but for now we're just doing string concatenation.
 	var mitmproxyConfig []byte
@@ -211,7 +211,7 @@ func createMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, proxyOp
 	if slen == 0 {
 		return os.ErrInvalid
 	}
-	ccm, err := configmapClient.Create(context.TODO(), &cm, metav1.CreateOptions{})
+	ccm, err := configmapClient.Create(ctx, &cm, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -226,11 +226,11 @@ func createMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, proxyOp
 }
 
 // destroyMitmproxyConfigMap removes a mitmproxy ConfigMap from the environment.
-func destroyMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, deploymentName string) error {
+func destroyMitmproxyConfigMap(ctx context.Context, configmapClient corev1.ConfigMapInterface, deploymentName string) error {
 	if deploymentName == "" {
 		return os.ErrInvalid
 	}
-	cms, err := configmapClient.List(context.TODO(), metav1.ListOptions{})
+	cms, err := configmapClient.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("error getting ConfigMaps: %w", err)
 	}
@@ -249,5 +249,5 @@ func destroyMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, deploy
 	if len(targetConfigMapNames) == 0 {
 		return ErrConfigMapNoMatch
 	}
-	return configmapClient.Delete(context.TODO(), targetConfigMapNames[0], metav1.DeleteOptions{})
+	return configmapClient.Delete(ctx, targetConfigMapNames[0], metav1.DeleteOptions{})
 }
