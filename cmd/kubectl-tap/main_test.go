@@ -21,22 +21,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type MockExiter struct {
-	Code int
-}
-
-func (m *MockExiter) Exit(code int) {
-	m.Code = code
-}
-
 func Test_RootCmd(t *testing.T) {
 	require := require.New(t)
-	exiter := &MockExiter{}
-	cmd := NewRootCmd(exiter)
+	cmd := NewRootCmd()
 	b := bytes.NewBufferString("")
 	cmd.SetOutput(b)
 	err := cmd.Execute()
-	require.Nil(err)
+	require.ErrorIs(err, errUsage, "rootCmd should return errUsage so main exits with EX_USAGE")
 	out, err := ioutil.ReadAll(b)
 	require.Nil(err)
 	ub := bytes.NewBufferString("")
@@ -46,7 +37,6 @@ func Test_RootCmd(t *testing.T) {
 	usage, err := ioutil.ReadAll(ub)
 	require.Nil(err)
 	require.Equal(usage, out)
-	require.Equal(64, exiter.Code, "rootCmd should always call os.Exit(64)")
 }
 
 func Test_VersionCmd(t *testing.T) {

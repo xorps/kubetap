@@ -451,7 +451,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 		if !ready {
 			fmt.Fprintf(cmd.OutOrStdout(), ".\n\n")
-			die("Pod not running after 90 seconds. Cancelling port-forward, tap still active.")
+			return fmt.Errorf("pod not running after %d seconds; cancelling port-forward, tap still active", interactiveTimeoutSeconds)
 		}
 		dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
