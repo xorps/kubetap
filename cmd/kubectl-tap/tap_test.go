@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,7 +15,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io/ioutil"
 	"strings"
@@ -68,6 +67,7 @@ func Test_NewTapCommand(t *testing.T) {
 			testViper.Set("proxyPort", tc.ProxyPort)
 			testViper.Set("namespace", tc.Namespace)
 			cmd := &cobra.Command{}
+			cmd.SetContext(t.Context())
 			cmd.SetOutput(ioutil.Discard)
 			err := NewTapCommand(fakeClient, &rest.Config{}, testViper)(cmd, []string{"sample-service"})
 			if tc.Err != nil {
@@ -77,7 +77,7 @@ func Test_NewTapCommand(t *testing.T) {
 			} else {
 				// sanity checks
 				require.Nil(err)
-				fakeDeployment, err := fakeClient.AppsV1().Deployments(testViper.GetString("namespace")).Get(context.TODO(), "sample-deployment", metav1.GetOptions{})
+				fakeDeployment, err := fakeClient.AppsV1().Deployments(testViper.GetString("namespace")).Get(t.Context(), "sample-deployment", metav1.GetOptions{})
 				require.Nil(err)
 				require.Len(fakeDeployment.Spec.Template.Spec.Containers, 2, "sidecar was not successfully added to deployment spec")
 				// container checks
@@ -91,7 +91,7 @@ func Test_NewTapCommand(t *testing.T) {
 					require.GreaterOrEqual(len(c.Ports), 2, "tap port was not added to the deployment")
 				}
 				// configmap checks
-				fakeCM, err := fakeClient.CoreV1().ConfigMaps(testViper.GetString("namespace")).Get(context.TODO(), kubetapConfigMapPrefix+fakeDeployment.Name, metav1.GetOptions{})
+				fakeCM, err := fakeClient.CoreV1().ConfigMaps(testViper.GetString("namespace")).Get(t.Context(), kubetapConfigMapPrefix+fakeDeployment.Name, metav1.GetOptions{})
 				require.Nil(err)
 				require.NotNil(fakeCM)
 				require.True(strings.Contains(fakeCM.Name, kubetapConfigMapPrefix))
@@ -128,6 +128,7 @@ func Test_NewUntapCommand(t *testing.T) {
 			testViper := viper.New()
 			b := bytes.NewBufferString("")
 			cmd := &cobra.Command{}
+			cmd.SetContext(t.Context())
 			cmd.SetOutput(b)
 			err := NewUntapCommand(fakeClient, testViper)(cmd, []string{"sample-service"})
 			if tc.Err != nil {
@@ -165,6 +166,7 @@ func Test_NewListCommand(t *testing.T) {
 			testViper.Set("namespace", tc.Namespace)
 			b := bytes.NewBufferString("")
 			cmd := &cobra.Command{}
+			cmd.SetContext(t.Context())
 			cmd.SetOutput(b)
 			err := NewListCommand(fakeClient, testViper)(cmd, []string{})
 			if tc.Err != nil {

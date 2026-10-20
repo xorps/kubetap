@@ -21,10 +21,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pkg/browser"
@@ -56,6 +54,7 @@ const (
 	kubetapConfigMapPrefix       = "kubetap-target-"
 
 	interactiveTimeoutSeconds = 90
+	revertTimeout             = 30 * time.Second
 	configMapAnnotationPrefix = "target-"
 	proxyModeReverse          = "reverse"
 
@@ -98,8 +97,8 @@ type Tap interface {
 	// with resources that will be necessary for the sidecar, but do
 	// not exist within a given Deployment.
 	// Example: mitmproxy calls this function to apply and remove ConfigMaps for mitmproxy.
-	ReadyEnv() error
-	UnreadyEnv() error
+	ReadyEnv(ctx context.Context) error
+	UnreadyEnv(ctx context.Context) error
 
 	// String prints the tap method, be it mitmproxy, tcpdump, etc.
 	String() string
@@ -132,8 +131,9 @@ type ProxyOptions struct {
 // NewListCommand lists Services that are already tapped.
 func NewListCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
+		ctx := cmd.Context()
 		namespace := viper.GetString("namespace")
-		exists, err := hasNamespace(client, namespace)
+		exists, err := hasNamespace(ctx, client, namespace)
 		if err != nil {
 			// this is the one case where we allow an empty namespace string
 			if !errors.Is(err, os.ErrInvalid) {
@@ -144,7 +144,7 @@ func NewListCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra
 		if !exists {
 			return ErrNamespaceNotExist
 		}
-		services, err := client.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
+		services, err := client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return err
 		}
@@ -182,6 +182,7 @@ func NewListCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra
 // deployment to add a proxy sidecar.
 func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *viper.Viper) func(*cobra.Command, []string) error { //nolint:gocyclo,maintidx
 	return func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
 		targetSvcName := args[0]
 
 		protocol := viper.GetString("protocol")
@@ -207,7 +208,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			viper.Set("namespace", "default")
 			namespace = "default"
 		}
-		exists, err := hasNamespace(client, namespace)
+		exists, err := hasNamespace(ctx, client, namespace)
 		if err != nil {
 			return fmt.Errorf("error fetching namespaces: %w", err)
 		}
@@ -240,7 +241,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		servicesClient := client.CoreV1().Services(namespace)
 
 		// get the service to ensure it exists before we go around monkeying with deployments
-		targetService, err := client.CoreV1().Services(namespace).Get(context.TODO(), targetSvcName, metav1.GetOptions{})
+		targetService, err := client.CoreV1().Services(namespace).Get(ctx, targetSvcName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -262,7 +263,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			// if named, must determine port from deployment spec
 			if ports.TargetPort.Type == intstr.String {
 				var err error
-				targetDpl, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
+				targetDpl, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 				if err != nil {
 					return fmt.Errorf("error resolving Deployment from Service selectors while setting proxy ports: %w", err)
 				}
@@ -280,7 +281,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			}
 		}
 
-		targetDpl, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
+		targetDpl, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
 			return fmt.Errorf("error resolving Deployment from Service selectors: %w", err)
 		}
@@ -302,12 +303,12 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		// Nothing in ReadyEnv should modify manifests that result in
 		// code running in the cluster. No Pods, no Contaniers, no ReplicaSets,
 		// etc.
-		if err := proxy.ReadyEnv(); err != nil {
+		if err := proxy.ReadyEnv(ctx); err != nil {
 			return err
 		}
 
 		// Setup the sidcar
-		dpl, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
+		dpl, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
 			return err
 		}
@@ -316,6 +317,14 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		sidecar := proxy.Sidecar(dpl.Name)
 		sidecar.Image = image
 		sidecar.Args = commandArgs
+
+		// revert removes the tap. It runs on a fresh context because ctx may
+		// already be cancelled (e.g. by Ctrl-C) when the tap needs undoing.
+		revert := func() {
+			revertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revertTimeout)
+			defer cancel()
+			_ = untap(revertCtx, cmd, client, viper, targetSvcName)
+		}
 
 		// Apply the Deployment configuration
 		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -328,20 +337,20 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			}
 			anns[annotationIsTapped] = dpl.Name
 			dpl.Spec.Template.SetAnnotations(anns)
-			_, updateErr := deploymentsClient.Update(context.TODO(), &dpl, metav1.UpdateOptions{})
+			_, updateErr := deploymentsClient.Update(ctx, &dpl, metav1.UpdateOptions{})
 			return updateErr
 		})
 		if retryErr != nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "Error modifying Deployment, reverting tap...")
-			_ = NewUntapCommand(client, viper)(cmd, args)
+			revert()
 			return fmt.Errorf("failed to add sidecars to Deployment: %w", retryErr)
 		}
 
 		// Tap the Service to redirect the incoming traffic to our proxy, which is configured to redirect
 		// to the original port.
-		if err := tapSvc(servicesClient, targetSvcName, targetSvcPort); err != nil {
+		if err := tapSvc(ctx, servicesClient, targetSvcName, targetSvcPort); err != nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "Error modifying Service, reverting tap...")
-			_ = NewUntapCommand(client, viper)(cmd, args)
+			revert()
 			return err
 		}
 
@@ -366,16 +375,22 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		bout := bytes.NewBufferString("")
 		stopCh := make(chan struct{})
 		readyCh := make(chan struct{})
-		ic := make(chan os.Signal, 1)
-		signal.Notify(ic, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+		// The port-forwarder stops when stopCh closes; tie it to ctx.
 		go func() {
-			<-ic
+			<-ctx.Done()
 			close(stopCh)
+		}()
+		// stopOnCancel reverts the tap if ctx has been cancelled (e.g. by Ctrl-C),
+		// which also covers API calls that failed because of the cancellation.
+		stopOnCancel := func(err error) error {
+			if ctx.Err() == nil {
+				return err
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), "")
 			fmt.Fprintln(cmd.OutOrStdout(), "Stopping kubetap...")
-			_ = NewUntapCommand(client, viper)(cmd, args)
-			die()
-		}()
+			revert()
+			return nil
+		}
 
 		podsClient := client.CoreV1().Pods(namespace)
 		s := make(chan struct{})
@@ -404,19 +419,23 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 				_ = bar.Finish()
 				break
 			}
-			time.Sleep(1 * time.Second)
+			select {
+			case <-ctx.Done():
+				return stopOnCancel(nil)
+			case <-time.After(1 * time.Second):
+			}
 			select {
 			case <-time.After(1 * time.Nanosecond):
 				// if not ready this cycle, abort
 				continue
 			case <-s:
-				dp, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
+				dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 				if err != nil {
-					return err
+					return stopOnCancel(err)
 				}
-				pod, err := kubetapPod(podsClient, dp.Name)
+				pod, err := kubetapPod(ctx, podsClient, dp.Name)
 				if err != nil {
-					return err
+					return stopOnCancel(err)
 				}
 				for _, cond := range pod.Status.Conditions {
 					if cond.Type == "ContainersReady" {
@@ -434,17 +453,17 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			fmt.Fprintf(cmd.OutOrStdout(), ".\n\n")
 			die("Pod not running after 90 seconds. Cancelling port-forward, tap still active.")
 		}
-		dp, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
+		dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
-			return err
+			return stopOnCancel(err)
 		}
-		pod, err := kubetapPod(podsClient, dp.Name)
+		pod, err := kubetapPod(ctx, podsClient, dp.Name)
 		if err != nil {
-			return err
+			return stopOnCancel(err)
 		}
 		transport, upgrader, err := spdy.RoundTripperFor(config)
 		if err != nil {
-			return err
+			return stopOnCancel(err)
 		}
 		path := "/api/v1/namespaces/" + namespace + "/pods/" + pod.Name + "/portforward"
 		dialer := spdy.NewDialer(upgrader,
@@ -462,7 +481,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 				fmt.Sprintf("%s:%s", "4000", strconv.Itoa(int(kubetapProxyListenPort))),
 			}, stopCh, readyCh, bout, berr)
 		if err != nil {
-			return err
+			return stopOnCancel(err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "\nPort-Forwards:\n\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s - http://127.0.0.1:%s\n", proxy.String(), strconv.Itoa(int(kubetapProxyWebInterfacePort)))
@@ -484,14 +503,11 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 				}
 			}()
 		}
+		// ForwardPorts blocks until stopCh is closed, i.e. until ctx is cancelled.
 		if err := fw.ForwardPorts(); err != nil {
-			return err
+			return stopOnCancel(err)
 		}
-		<-readyCh
-		halt := make(chan os.Signal, 1)
-		signal.Notify(halt, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-		<-halt
-		return nil
+		return stopOnCancel(nil)
 	}
 }
 
@@ -499,88 +515,92 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 // the inverse of NewTapCommand.
 func NewUntapCommand(client kubernetes.Interface, viper *viper.Viper) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		targetSvcName := args[0]
-		namespace := viper.GetString("namespace")
-		if namespace == "" {
-			namespace = "default"
-		}
-		exists, err := hasNamespace(client, namespace)
-		if err != nil {
-			return fmt.Errorf("error fetching namespaces: %w", err)
-		}
-		if !exists {
-			return ErrNamespaceNotExist
-		}
-
-		deploymentsClient := client.AppsV1().Deployments(namespace)
-		servicesClient := client.CoreV1().Services(namespace)
-
-		targetService, err := client.CoreV1().Services(namespace).Get(context.TODO(), targetSvcName, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		dpl, err := deploymentFromSelectors(deploymentsClient, targetService.Spec.Selector)
-		if err != nil {
-			return err
-		}
-		if dpl.Namespace != namespace {
-			panic(ErrDeploymentOutsideNamespace)
-		}
-
-		proxy := NewMitmproxy(client, ProxyOptions{
-			Namespace: namespace,
-			Target:    targetSvcName,
-			dplName:   dpl.Name,
-		})
-
-		if err := proxy.UnreadyEnv(); err != nil {
-			// both error types below can be thrown
-			if !errors.Is(ErrConfigMapNoMatch, err) {
-				return err
-			}
-		}
-
-		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			// Explicitly re-fetch the deployment to reduce the chance of having a race
-			deployment, getErr := deploymentsClient.Get(context.TODO(), dpl.Name, metav1.GetOptions{})
-			if getErr != nil {
-				return getErr
-			}
-			var containersNoProxy []v1.Container
-			for _, c := range deployment.Spec.Template.Spec.Containers {
-				if c.Name != kubetapContainerName {
-					containersNoProxy = append(containersNoProxy, c)
-				}
-			}
-			deployment.Spec.Template.Spec.Containers = containersNoProxy
-			var volumes []v1.Volume
-			for _, v := range deployment.Spec.Template.Spec.Volumes {
-				if !strings.HasPrefix(v.Name, "kubetap") {
-					volumes = append(volumes, v)
-				}
-			}
-			deployment.Spec.Template.Spec.Volumes = volumes
-			anns := deployment.Spec.Template.GetAnnotations()
-			if anns != nil {
-				delete(anns, annotationIsTapped)
-				deployment.Spec.Template.SetAnnotations(anns)
-			}
-			_, updateErr := deploymentsClient.Update(context.TODO(), deployment, metav1.UpdateOptions{})
-			return updateErr
-		})
-		if retryErr != nil {
-			return fmt.Errorf("failed to remove sidecars from Deployment: %w", retryErr)
-		}
-		if err := untapSvc(servicesClient, targetSvcName); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Untapped Service %q\n", targetSvcName)
-		return nil
+		return untap(cmd.Context(), cmd, client, viper, args[0])
 	}
 }
 
+// untap removes the proxy sidecar, ConfigMap, and Service changes for targetSvcName.
+func untap(ctx context.Context, cmd *cobra.Command, client kubernetes.Interface, viper *viper.Viper, targetSvcName string) error {
+	namespace := viper.GetString("namespace")
+	if namespace == "" {
+		namespace = "default"
+	}
+	exists, err := hasNamespace(ctx, client, namespace)
+	if err != nil {
+		return fmt.Errorf("error fetching namespaces: %w", err)
+	}
+	if !exists {
+		return ErrNamespaceNotExist
+	}
+
+	deploymentsClient := client.AppsV1().Deployments(namespace)
+	servicesClient := client.CoreV1().Services(namespace)
+
+	targetService, err := client.CoreV1().Services(namespace).Get(ctx, targetSvcName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	dpl, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
+	if err != nil {
+		return err
+	}
+	if dpl.Namespace != namespace {
+		panic(ErrDeploymentOutsideNamespace)
+	}
+
+	proxy := NewMitmproxy(client, ProxyOptions{
+		Namespace: namespace,
+		Target:    targetSvcName,
+		dplName:   dpl.Name,
+	})
+
+	if err := proxy.UnreadyEnv(ctx); err != nil {
+		// both error types below can be thrown
+		if !errors.Is(err, ErrConfigMapNoMatch) {
+			return err
+		}
+	}
+
+	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Explicitly re-fetch the deployment to reduce the chance of having a race
+		deployment, getErr := deploymentsClient.Get(ctx, dpl.Name, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		var containersNoProxy []v1.Container
+		for _, c := range deployment.Spec.Template.Spec.Containers {
+			if c.Name != kubetapContainerName {
+				containersNoProxy = append(containersNoProxy, c)
+			}
+		}
+		deployment.Spec.Template.Spec.Containers = containersNoProxy
+		var volumes []v1.Volume
+		for _, v := range deployment.Spec.Template.Spec.Volumes {
+			if !strings.HasPrefix(v.Name, "kubetap") {
+				volumes = append(volumes, v)
+			}
+		}
+		deployment.Spec.Template.Spec.Volumes = volumes
+		anns := deployment.Spec.Template.GetAnnotations()
+		if anns != nil {
+			delete(anns, annotationIsTapped)
+			deployment.Spec.Template.SetAnnotations(anns)
+		}
+		_, updateErr := deploymentsClient.Update(ctx, deployment, metav1.UpdateOptions{})
+		return updateErr
+	})
+	if retryErr != nil {
+		return fmt.Errorf("failed to remove sidecars from Deployment: %w", retryErr)
+	}
+	if err := untapSvc(ctx, servicesClient, targetSvcName); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Untapped Service %q\n", targetSvcName)
+	return nil
+}
+
 // deploymentFromSelectors returns a deployment given selector labels.
-func deploymentFromSelectors(deploymentsClient appsv1.DeploymentInterface, selectors map[string]string) (k8sappsv1.Deployment, error) {
+func deploymentFromSelectors(ctx context.Context, deploymentsClient appsv1.DeploymentInterface, selectors map[string]string) (k8sappsv1.Deployment, error) {
 	var sel string
 	switch len(selectors) {
 	case 0:
@@ -595,7 +615,7 @@ func deploymentFromSelectors(deploymentsClient appsv1.DeploymentInterface, selec
 		}
 		sel = strings.TrimLeft(sel, ",")
 	}
-	dpls, err := deploymentsClient.List(context.TODO(), metav1.ListOptions{
+	dpls, err := deploymentsClient.List(ctx, metav1.ListOptions{
 		LabelSelector: sel,
 	})
 	if err != nil {
@@ -612,8 +632,8 @@ func deploymentFromSelectors(deploymentsClient appsv1.DeploymentInterface, selec
 }
 
 // kubetapPod returns a kubetap pod matching a given Deployment name and Namespace.
-func kubetapPod(podClient corev1.PodInterface, deploymentName string) (v1.Pod, error) {
-	pods, err := podClient.List(context.TODO(), metav1.ListOptions{})
+func kubetapPod(ctx context.Context, podClient corev1.PodInterface, deploymentName string) (v1.Pod, error) {
+	pods, err := podClient.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return v1.Pod{}, err
 	}
@@ -633,9 +653,9 @@ func kubetapPod(podClient corev1.PodInterface, deploymentName string) (v1.Pod, e
 }
 
 // tapSvc modifies a target port to point to a new proxy service.
-func tapSvc(svcClient corev1.ServiceInterface, svcName string, targetPort int32) error {
+func tapSvc(ctx context.Context, svcClient corev1.ServiceInterface, svcName string, targetPort int32) error {
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		svc, getErr := svcClient.Get(context.TODO(), svcName, metav1.GetOptions{})
+		svc, getErr := svcClient.Get(ctx, svcName, metav1.GetOptions{})
 		if getErr != nil {
 			return getErr
 		}
@@ -686,7 +706,7 @@ func tapSvc(svcClient corev1.ServiceInterface, svcName string, targetPort int32)
 		}
 		svc.Spec.Ports = servicePorts
 
-		_, updateErr := svcClient.Update(context.TODO(), svc, metav1.UpdateOptions{})
+		_, updateErr := svcClient.Update(ctx, svc, metav1.UpdateOptions{})
 		return updateErr
 	})
 	if retryErr != nil {
@@ -696,9 +716,9 @@ func tapSvc(svcClient corev1.ServiceInterface, svcName string, targetPort int32)
 }
 
 // untapSvc modifies a target port point to the original service, not our proxy sidecar.
-func untapSvc(svcClient corev1.ServiceInterface, svcName string) error {
+func untapSvc(ctx context.Context, svcClient corev1.ServiceInterface, svcName string) error {
 	retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		svc, getErr := svcClient.Get(context.TODO(), svcName, metav1.GetOptions{})
+		svc, getErr := svcClient.Get(ctx, svcName, metav1.GetOptions{})
 		if getErr != nil {
 			return getErr
 		}
@@ -726,7 +746,7 @@ func untapSvc(svcClient corev1.ServiceInterface, svcName string) error {
 			}
 		}
 		svc.SetAnnotations(newAnns)
-		_, updateErr := svcClient.Update(context.TODO(), svc, metav1.UpdateOptions{})
+		_, updateErr := svcClient.Update(ctx, svc, metav1.UpdateOptions{})
 		return updateErr
 	})
 	if retryErr != nil {
@@ -736,11 +756,11 @@ func untapSvc(svcClient corev1.ServiceInterface, svcName string) error {
 }
 
 // hasNamespace checks if a given Namespace exists.
-func hasNamespace(client kubernetes.Interface, namespace string) (bool, error) {
+func hasNamespace(ctx context.Context, client kubernetes.Interface, namespace string) (bool, error) {
 	if namespace == "" {
 		return false, os.ErrInvalid
 	}
-	ns, err := client.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+	ns, err := client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return false, err
 	}

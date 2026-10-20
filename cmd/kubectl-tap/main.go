@@ -14,8 +14,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -81,7 +84,11 @@ func main() {
 
 	rootCmd.AddCommand(versionCmd, onCmd, offCmd, listCmd)
 
-	if err := rootCmd.Execute(); err != nil {
+	// Cancelled on Ctrl-C/SIGTERM so in-flight work stops and taps can be reverted.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err = rootCmd.ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		exiter.Exit(1)
 	}
 }
