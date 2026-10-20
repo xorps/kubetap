@@ -545,7 +545,7 @@ func untap(ctx context.Context, cmd *cobra.Command, client kubernetes.Interface,
 		return err
 	}
 	if dpl.Namespace != namespace {
-		panic(ErrDeploymentOutsideNamespace)
+		return ErrDeploymentOutsideNamespace
 	}
 
 	proxy := NewMitmproxy(client, ProxyOptions{
