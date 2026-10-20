@@ -49,3 +49,12 @@ func Test_DestroyMitmproxyConfigMap(t *testing.T) {
 		})
 	}
 }
+
+func Test_MitmproxySidecar_doesNotModifyTemplate(t *testing.T) {
+	m := &Mitmproxy{}
+	a := m.Sidecar("a")
+	b := m.Sidecar("b")
+	require.Equal(t, kubetapConfigMapPrefix+"a", a.VolumeMounts[0].Name)
+	require.Equal(t, kubetapConfigMapPrefix+"b", b.VolumeMounts[0].Name)
+	require.Empty(t, MitmproxySidecarContainer.VolumeMounts[0].Name, "Sidecar must not modify the shared template")
+}

@@ -14,10 +14,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -325,38 +325,45 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 
 		// revert removes the tap. It runs on a fresh context because ctx may
 		// already be cancelled (e.g. by Ctrl-C) when the tap needs undoing.
-		revert := func() {
+		revert := func() error {
 			revertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revertTimeout)
 			defer cancel()
-			_ = untap(revertCtx, cmd, client, viper, targetSvcName)
+			if err := untap(revertCtx, cmd, client, viper, targetSvcName); err != nil {
+				return fmt.Errorf("failed to revert tap, run 'kubectl tap off -n %s %s' to clean up: %w", namespace, targetSvcName, err)
+			}
+			return nil
 		}
 
 		// Apply the Deployment configuration
 		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			dpl.Spec.Template.Spec.Containers = append(dpl.Spec.Template.Spec.Containers, sidecar)
-			proxy.PatchDeployment(&dpl)
+			// Re-fetch on every attempt so a retry after a conflict starts from
+			// the latest version instead of re-sending the stale one.
+			latest, getErr := deploymentsClient.Get(ctx, dpl.Name, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			latest.Spec.Template.Spec.Containers = append(latest.Spec.Template.Spec.Containers, sidecar)
+			proxy.PatchDeployment(latest)
 			// set annotation on pod to know what pods are tapped
-			anns := dpl.Spec.Template.GetAnnotations()
+			anns := latest.Spec.Template.GetAnnotations()
 			if anns == nil {
 				anns = map[string]string{}
 			}
-			anns[annotationIsTapped] = dpl.Name
-			dpl.Spec.Template.SetAnnotations(anns)
-			_, updateErr := deploymentsClient.Update(ctx, &dpl, metav1.UpdateOptions{})
+			anns[annotationIsTapped] = latest.Name
+			latest.Spec.Template.SetAnnotations(anns)
+			_, updateErr := deploymentsClient.Update(ctx, latest, metav1.UpdateOptions{})
 			return updateErr
 		})
 		if retryErr != nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "Error modifying Deployment, reverting tap...")
-			revert()
-			return fmt.Errorf("failed to add sidecars to Deployment: %w", retryErr)
+			return errors.Join(fmt.Errorf("failed to add sidecars to Deployment: %w", retryErr), revert())
 		}
 
 		// Tap the Service to redirect the incoming traffic to our proxy, which is configured to redirect
 		// to the original port.
 		if err := tapSvc(ctx, servicesClient, targetSvcName, targetSvcPort); err != nil {
 			fmt.Fprintln(cmd.OutOrStdout(), "Error modifying Service, reverting tap...")
-			revert()
-			return err
+			return errors.Join(err, revert())
 		}
 
 		if !portForward {
@@ -376,8 +383,6 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 
 		// We're now in an interactive state
 		fmt.Fprintf(cmd.OutOrStdout(), "Establishing port-forward tunnels to Service...\n")
-		berr := bytes.NewBufferString("")
-		bout := bytes.NewBufferString("")
 		stopCh := make(chan struct{})
 		readyCh := make(chan struct{})
 		// The port-forwarder stops when stopCh closes; tie it to ctx.
@@ -393,8 +398,16 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "")
 			fmt.Fprintln(cmd.OutOrStdout(), "Stopping kubetap...")
-			revert()
-			return nil
+			return revert()
+		}
+		// abortForward reverts the tap when the port-forward can't be established,
+		// since the interactive session it belongs to is over.
+		abortForward := func(err error) error {
+			if ctx.Err() != nil {
+				return stopOnCancel(err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Error establishing port-forward, reverting tap...")
+			return errors.Join(err, revert())
 		}
 
 		podsClient := client.CoreV1().Pods(namespace)
@@ -451,15 +464,15 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 		dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
 		if err != nil {
-			return stopOnCancel(err)
+			return abortForward(err)
 		}
 		pod, err := kubetapPod(ctx, podsClient, dp.Name)
 		if err != nil {
-			return stopOnCancel(err)
+			return abortForward(err)
 		}
 		transport, upgrader, err := spdy.RoundTripperFor(config)
 		if err != nil {
-			return stopOnCancel(err)
+			return abortForward(err)
 		}
 		path := "/api/v1/namespaces/" + namespace + "/pods/" + pod.Name + "/portforward"
 		dialer := spdy.NewDialer(upgrader,
@@ -475,9 +488,12 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 			[]string{
 				fmt.Sprintf("%s:%s", strconv.Itoa(kubetapProxyWebInterfacePort), strconv.Itoa(kubetapProxyWebInterfacePort)),
 				fmt.Sprintf("%s:%s", "4000", strconv.Itoa(int(kubetapProxyListenPort))),
-			}, stopCh, readyCh, bout, berr)
+			},
+			// Discard the per-connection "Handling connection" messages, but
+			// surface forwarding errors.
+			stopCh, readyCh, io.Discard, cmd.ErrOrStderr())
 		if err != nil {
-			return stopOnCancel(err)
+			return abortForward(err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "\nPort-Forwards:\n\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s - http://127.0.0.1:%s\n", proxy.String(), strconv.Itoa(int(kubetapProxyWebInterfacePort)))
@@ -501,7 +517,7 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 		// ForwardPorts blocks until stopCh is closed, i.e. until ctx is cancelled.
 		if err := fw.ForwardPorts(); err != nil {
-			return stopOnCancel(err)
+			return abortForward(err)
 		}
 		return stopOnCancel(nil)
 	}

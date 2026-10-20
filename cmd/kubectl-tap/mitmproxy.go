@@ -111,7 +111,8 @@ type Mitmproxy struct {
 
 // Sidecar provides a proxy sidecar container.
 func (m *Mitmproxy) Sidecar(deploymentName string) v1.Container {
-	c := MitmproxySidecarContainer
+	// Deep copy so setting the mount name doesn't modify the shared template.
+	c := *MitmproxySidecarContainer.DeepCopy()
 	c.VolumeMounts[0].Name = kubetapConfigMapPrefix + deploymentName
 	return c
 }

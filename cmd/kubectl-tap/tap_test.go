@@ -27,10 +27,13 @@ import (
 	"github.com/stretchr/testify/require"
 	k8sappsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const (
@@ -556,4 +559,54 @@ func Test_podContainersReady(t *testing.T) {
 			require.Equal(t, tc.Want, podContainersReady(tc.Pod))
 		})
 	}
+}
+
+func Test_NewTapCommand_retriesConflictWithLatestDeployment(t *testing.T) {
+	fakeClient := fakeClientUntappedSimple()
+	// Fail the first Deployment update with a conflict, as if another writer
+	// updated it between our read and write.
+	var conflicted bool
+	fakeClient.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if conflicted {
+			return false, nil, nil
+		}
+		conflicted = true
+		return true, nil, apierrors.NewConflict(k8sappsv1.Resource("deployments"), "sample-deployment", errors.New("modified"))
+	})
+	testViper := viper.New()
+	testViper.Set("proxyPort", 80)
+	testViper.Set("namespace", "default")
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOutput(io.Discard)
+	err := NewTapCommand(fakeClient, &rest.Config{}, testViper)(cmd, []string{"sample-service"})
+	require.NoError(t, err)
+	require.True(t, conflicted)
+
+	dpl, err := fakeClient.AppsV1().Deployments("default").Get(t.Context(), "sample-deployment", metav1.GetOptions{})
+	require.NoError(t, err)
+	var sidecars int
+	for _, c := range dpl.Spec.Template.Spec.Containers {
+		if c.Name == kubetapContainerName {
+			sidecars++
+		}
+	}
+	require.Equal(t, 1, sidecars, "a retry must not add the sidecar twice")
+}
+
+func Test_NewTapCommand_failedRevertSuggestsTapOff(t *testing.T) {
+	fakeClient := fakeClientUntappedSimple()
+	// Every Deployment update fails, so both tapping and the revert fail.
+	fakeClient.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("api server unavailable")
+	})
+	testViper := viper.New()
+	testViper.Set("proxyPort", 80)
+	testViper.Set("namespace", "default")
+	cmd := &cobra.Command{}
+	cmd.SetContext(t.Context())
+	cmd.SetOutput(io.Discard)
+	err := NewTapCommand(fakeClient, &rest.Config{}, testViper)(cmd, []string{"sample-service"})
+	require.ErrorContains(t, err, "failed to add sidecars to Deployment")
+	require.ErrorContains(t, err, "run 'kubectl tap off -n default sample-service' to clean up")
 }
