@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -36,13 +36,13 @@ const (
 	annotationConfigMap          = "kubetap.io/proxy-config"
 	annotationIsTapped           = "kubetap.io/tapped"
 
-	defaultImageHTTP = "gcr.io/soluble-oss/kubetap-mitmproxy:latest"
-	defaultImageRaw  = "gcr.io/soluble-oss/kubetap-raw:latest"
-	defaultImageGRPC = "gcr.io/soluble-oss/kubetap-grpc:latest"
+	defaultImageHTTP = "ghcr.io/xorps/kubetap-mitmproxy:latest"
+	defaultImageRaw  = "ghcr.io/xorps/kubetap-raw:latest"
+	defaultImageGRPC = "ghcr.io/xorps/kubetap-grpc:latest"
 )
 
 // die exit the program, printing the error.
-func die(args ...interface{}) {
+func die(args ...any) {
 	fmt.Fprintln(os.Stderr, args...)
 	os.Exit(1)
 }
@@ -132,7 +132,7 @@ func NewRootCmd(e Exiter) *cobra.Command {
 		Long: `kubetap - proxy Services in Kubernetes with ease.
 
  More information is available at the project website:
-   https://soluble-ai.github.io/kubetap/
+   https://xorps.github.io/kubetap/
 
  Created and maintained by Soluble:
    https://www.soluble.ai/

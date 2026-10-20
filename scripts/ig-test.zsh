@@ -7,20 +7,7 @@ script_dir=${0:A:h}
 # Prep env
 #
 
-KIND_VERSION=v0.8.1
-HELM_VERSION=v3.2.1
-
-# modfile hack to avoid package collisions and work around azure go-autorest bug
-print "module kubetap-ig-tests
-
-go 1.13
-
-require (
-)
-
-replace (
-  github.com/Azure/go-autorest => github.com/Azure/go-autorest v13.0.0+incompatible
-)" >! ig-tests.mod
+KIND_VERSION=v0.33.0
 
 # return error if kubectl is not available
 if [[ =kubectl == '' ]]; then
@@ -28,15 +15,10 @@ if [[ =kubectl == '' ]]; then
   return 1
 fi
 
-# install helm if not available
-if [[ =helm == '' ]]; then
-  GO111MODULE=on go get -modfile=ig-tests.mod helm/cmd/helm@${HELM_VERSION}
-fi
-helm repo add stable https://charts.helm.sh/stable --force-update
-helm repo update
-
 # we use kind to establish a local testing cluster
-GO111MODULE=on go get -modfile=ig-tests.mod sigs.k8s.io/kind@${KIND_VERSION}
+if [[ =kind == '' ]]; then
+  go install sigs.k8s.io/kind@${KIND_VERSION}
+fi
 
 #
 # Establish a local testing cluster
@@ -54,20 +36,24 @@ trap '{ e=${?}; sleep 1; kind delete cluster --name kubetap ; exit ${e} }' SIGIN
 kind create cluster --name kubetap
 
 #
-# Test kubetap using helm ${chart}
+# Test kubetap against simple web server deployments
 #
-_kubetap_helm_charts=('stable/grafana' 'stable/dokuwiki')
-_kubetap_helm_services=('grafana' 'dokuwiki')
-_kubetap_helm_svc_port=('80' '80')
+_kubetap_test_images=(
+  'nginx:1.31.7-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d'
+  'httpd:2.4.69-alpine@sha256:3440c39d8d6f54fa9ad2549e5a60c19ddd435faadc29c1ad28aa795f71888889'
+)
+_kubetap_test_services=('nginx' 'httpd')
+_kubetap_test_svc_port=('80' '80')
 
 typeset -i _kubetap_iter
-for chart in ${_kubetap_helm_charts[@]}; do
+for image in ${_kubetap_test_images[@]}; do
   ((_kubetap_iter+=1))
-  _kubetap_helm=${chart:t}
-  _kubetap_port=${_kubetap_helm_svc_port[${_kubetap_iter}]}
-  _kubetap_service=${_kubetap_helm_services[${_kubetap_iter}]}
+  _kubetap_port=${_kubetap_test_svc_port[${_kubetap_iter}]}
+  _kubetap_service=${_kubetap_test_services[${_kubetap_iter}]}
 
-  helm install --kube-context kind-kubetap ${_kubetap_helm} ${chart}
+  kubectl --context kind-kubetap create deployment ${_kubetap_service} --image=${image} --port=${_kubetap_port}
+  kubectl --context kind-kubetap expose deployment ${_kubetap_service} --port=${_kubetap_port}
+  kubectl --context kind-kubetap rollout status deployment/${_kubetap_service} --timeout=120s
   kubectl tap on ${_kubetap_service} -p${_kubetap_port} --context kind-kubetap
   sleep 20
 
@@ -106,10 +92,10 @@ for chart in ${_kubetap_helm_charts[@]}; do
 
   # cleanup test
   kubectl tap off ${_kubetap_service} --context kind-kubetap
-  helm delete --kube-context kind-kubetap ${_kubetap_helm}
+  kubectl --context kind-kubetap delete service,deployment ${_kubetap_service} --wait
 
-  unset _kubetap_helm _kubetap_port _kubetap_service
+  unset _kubetap_port _kubetap_service
 done
-unset _kubetap_helm_charts _kubetap_helm_services _kubetap_helm_svc_port _kubetap_iter
+unset _kubetap_test_images _kubetap_test_services _kubetap_test_svc_port _kubetap_iter
 
 #source ${script_dir}/_post.zsh

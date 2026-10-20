@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -59,12 +59,9 @@ var MitmproxySidecarContainer = v1.Container{
 		},
 	},
 	ReadinessProbe: &v1.Probe{
-		Handler: v1.Handler{
-			HTTPGet: &v1.HTTPGetAction{
-				Path:   "/",
-				Port:   intstr.FromInt(kubetapProxyWebInterfacePort),
-				Scheme: v1.URISchemeHTTP,
-			},
+		// mitmweb requires an auth token on every HTTP route, so probe the port instead.
+		TCPSocket: &v1.TCPSocketAction{
+			Port: intstr.FromInt32(kubetapProxyWebInterfacePort),
 		},
 		InitialDelaySeconds: 5,
 		PeriodSeconds:       5,
@@ -97,7 +94,7 @@ func NewMitmproxy(c kubernetes.Interface, p ProxyOptions) Tap {
 	// mitmproxy only supports one mode right now.
 	// How we expose options for other modes may
 	// be explored in the future.
-	p.Mode = "reverse"
+	p.Mode = proxyModeReverse
 	return &Mitmproxy{
 		Protos:    []Protocol{protocolHTTP},
 		Client:    c,
@@ -123,20 +120,14 @@ func (m *Mitmproxy) Sidecar(deploymentName string) v1.Container {
 func (m *Mitmproxy) PatchDeployment(deployment *k8sappsv1.Deployment) {
 	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, v1.Volume{
 		Name: kubetapConfigMapPrefix + deployment.Name,
-		VolumeSource: v1.VolumeSource{
-			ConfigMap: &v1.ConfigMapVolumeSource{
-				LocalObjectReference: v1.LocalObjectReference{
-					Name: kubetapConfigMapPrefix + deployment.Name,
-				},
-			},
+		ConfigMap: &v1.ConfigMapVolumeSource{
+			Name: kubetapConfigMapPrefix + deployment.Name,
 		},
 	})
 	// add emptydir to resolve permission problems, and to down the road export dumps
 	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, v1.Volume{
-		Name: mitmproxyDataVolName,
-		VolumeSource: v1.VolumeSource{
-			EmptyDir: &v1.EmptyDirVolumeSource{},
-		},
+		Name:     mitmproxyDataVolName,
+		EmptyDir: &v1.EmptyDirVolumeSource{},
 	})
 }
 
@@ -163,8 +154,8 @@ func (m *Mitmproxy) ReadyEnv() error {
 		_ = destroyMitmproxyConfigMap(configmapsClient, m.ProxyOpts.dplName)
 		rErr := createMitmproxyConfigMap(configmapsClient, m.ProxyOpts)
 		if rErr != nil {
-			if errors.Is(os.ErrInvalid, rErr) {
-				return fmt.Errorf("there was an unexpected problem creating the ConfigMap")
+			if errors.Is(rErr, os.ErrInvalid) {
+				return errors.New("there was an unexpected problem creating the ConfigMap")
 			}
 			return rErr
 		}
@@ -185,11 +176,11 @@ func createMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, proxyOp
 	// but for now we're just doing string concatenation.
 	var mitmproxyConfig []byte
 	switch proxyOpts.Mode {
-	case "reverse":
+	case proxyModeReverse:
 		if proxyOpts.UpstreamHTTPS {
-			mitmproxyConfig = append([]byte(mitmproxyBaseConfig), []byte("mode: reverse:https://127.0.0.1:"+proxyOpts.UpstreamPort)...)
+			mitmproxyConfig = append([]byte(mitmproxyBaseConfig), []byte("mode:\n- reverse:https://127.0.0.1:"+proxyOpts.UpstreamPort)...)
 		} else {
-			mitmproxyConfig = append([]byte(mitmproxyBaseConfig), []byte("mode: reverse:http://127.0.0.1:"+proxyOpts.UpstreamPort)...)
+			mitmproxyConfig = append([]byte(mitmproxyBaseConfig), []byte("mode:\n- reverse:http://127.0.0.1:"+proxyOpts.UpstreamPort)...)
 		}
 	case "regular":
 		// non-applicable
@@ -209,12 +200,10 @@ func createMitmproxyConfigMap(configmapClient corev1.ConfigMapInterface, proxyOp
 	cmData := make(map[string][]byte)
 	cmData[mitmproxyConfigFile] = mitmproxyConfig
 	cm := v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      kubetapConfigMapPrefix + proxyOpts.dplName,
-			Namespace: proxyOpts.Namespace,
-			Annotations: map[string]string{
-				annotationConfigMap: configMapAnnotationPrefix + proxyOpts.dplName,
-			},
+		Name:      kubetapConfigMapPrefix + proxyOpts.dplName,
+		Namespace: proxyOpts.Namespace,
+		Annotations: map[string]string{
+			annotationConfigMap: configMapAnnotationPrefix + proxyOpts.dplName,
 		},
 		BinaryData: cmData,
 	}

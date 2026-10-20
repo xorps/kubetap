@@ -41,6 +41,13 @@ Port-Forwards:
 As shown above, you can now navigate to `http://127.0.0.1:2244` to
 access the proxy.
 
+mitmweb protects its web interface with a login token that it prints at
+startup. Retrieve it from the sidecar's logs:
+
+```sh
+kubectl logs deploy/<deployment> -n <namespace> -c kubetap | grep token=
+```
+
 Note that you can also use the `--browser` flag with `tap on` to automatically
 open the printed URLs in the default browser. `--browser` implies `--port-forward`.
 
