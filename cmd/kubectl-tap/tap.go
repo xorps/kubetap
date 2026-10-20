@@ -54,6 +54,7 @@ const (
 	kubetapConfigMapPrefix       = "kubetap-target-"
 
 	interactiveTimeoutSeconds = 90
+	readyCheckDelaySeconds    = 5
 	revertTimeout             = 30 * time.Second
 	configMapAnnotationPrefix = "target-"
 	proxyModeReverse          = "reverse"
@@ -393,14 +394,6 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 		}
 
 		podsClient := client.CoreV1().Pods(namespace)
-		s := make(chan struct{})
-		defer close(s)
-		go func() {
-			// Skip the first few checks to give pods time to come up.
-			// Race: If the first few cycles are not skipped, the condition status may be "Ready".
-			time.Sleep(5 * time.Second)
-			s <- struct{}{}
-		}()
 		bar := progressbar.NewOptions(interactiveTimeoutSeconds,
 			progressbar.OptionThrottle(100*time.Millisecond),
 			progressbar.OptionClearOnFinish(),
@@ -412,41 +405,37 @@ func NewTapCommand(client kubernetes.Interface, config *rest.Config, viper *vipe
 				fmt.Fprintf(cmd.OutOrStderr(), "\n")
 			}),
 		)
+		// Poll once a second until the tapped Pod's containers are ready.
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		var ready bool
-		for range interactiveTimeoutSeconds {
-			_ = bar.Add(1)
-			if ready {
-				_ = bar.Finish()
-				break
-			}
+		for i := range interactiveTimeoutSeconds {
 			select {
 			case <-ctx.Done():
 				return stopOnCancel(nil)
-			case <-time.After(1 * time.Second):
+			case <-ticker.C:
 			}
-			select {
-			case <-time.After(1 * time.Nanosecond):
-				// if not ready this cycle, abort
+			_ = bar.Add(1)
+			// Skip the first few checks to give the new Pod time to be created.
+			if i < readyCheckDelaySeconds {
 				continue
-			case <-s:
-				dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
-				if err != nil {
-					return stopOnCancel(err)
-				}
-				pod, err := kubetapPod(ctx, podsClient, dp.Name)
-				if err != nil {
-					return stopOnCancel(err)
-				}
-				for _, cond := range pod.Status.Conditions {
-					if cond.Type == "ContainersReady" {
-						if cond.Status == "True" {
-							ready = true
-						}
-					}
-				}
-				go func() {
-					s <- struct{}{}
-				}()
+			}
+			dp, err := deploymentFromSelectors(ctx, deploymentsClient, targetService.Spec.Selector)
+			if err != nil {
+				return stopOnCancel(err)
+			}
+			pod, err := kubetapPod(ctx, podsClient, dp.Name)
+			if errors.Is(err, ErrKubetapPodNoMatch) {
+				// The tapped Pod hasn't been created yet.
+				continue
+			}
+			if err != nil {
+				return stopOnCancel(err)
+			}
+			if podContainersReady(pod) {
+				ready = true
+				_ = bar.Finish()
+				break
 			}
 		}
 		if !ready {
@@ -650,6 +639,16 @@ func kubetapPod(ctx context.Context, podClient corev1.PodInterface, deploymentNa
 		}
 	}
 	return p, ErrKubetapPodNoMatch
+}
+
+// podContainersReady reports whether all of pod's containers are ready.
+func podContainersReady(pod v1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == v1.ContainersReady {
+			return cond.Status == v1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // tapSvc modifies a target port to point to a new proxy service.
